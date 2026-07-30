@@ -1,0 +1,4 @@
+---
+collections:
+  - name: community.openwrt
+  - name: community.general

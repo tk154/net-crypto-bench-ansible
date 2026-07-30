@@ -1,0 +1,19 @@
+---
+- name: Generate tunnel keys on the Ansible controller
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Ensure generated directory exists
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../inventories/lab/generated"
+        state: directory
+        mode: "0700"
+
+    - name: Generate keys from compact topology
+      ansible.builtin.command:
+        cmd: >-
+          python3 {{ playbook_dir }}/../scripts/generate_keys.py
+          --topology {{ playbook_dir }}/../topology/topology.yml
+          --output {{ playbook_dir }}/../inventories/lab/generated/keys.yml
+          {{ generate_key_extra_args | default('') }}
+      changed_when: true

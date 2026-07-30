@@ -1,0 +1,8 @@
+---
+- import_playbook: generate_keys.yml
+
+- name: Configure OpenWrt DuT lab devices from compact formulas
+  hosts: openwrt:!sink
+  gather_facts: false
+  roles:
+    - openwrt_formulaic_network

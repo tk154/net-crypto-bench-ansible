@@ -1,0 +1,288 @@
+---
+schema_version: 5
+
+lab:
+  name: wg-dut-lab
+  generated_keys_file: inventories/lab/generated/keys.yml
+
+keygen:
+  wireguard_tool_candidates: [wg-wireguard, wg]
+  wolfguard_tool_candidates: [wg-fips]
+
+hosts:
+  source:
+    os: arch
+    role: traffic_source
+  enc:
+    os: openwrt
+    role: two_dut_encryptor
+  dec:
+    os: openwrt
+    role: two_dut_decryptor
+  sink:
+    os: openwrt
+    role: traffic_sink
+  d2:
+    os: openwrt
+    role: one_dut
+  d3:
+    os: openwrt
+    role: one_dut
+  d4:
+    os: openwrt
+    role: one_dut
+  d5:
+    os: openwrt
+    role: one_dut
+  d6:
+    os: openwrt
+    role: one_dut
+  d7:
+    os: openwrt
+    role: one_dut
+
+source_host:
+  backend: networkmanager
+  connection_dir: /etc/NetworkManager/system-connections
+
+  two_dut:
+    connection_id: D1-Supermicro
+    filename: D1-Supermicro.nmconnection
+    type: ethernet
+    interface_name: eth0
+    mtu: 1500
+
+  one_dut:
+    type: vlan
+    parent: eth1
+    vlan_id_base: 1200
+    source_host_primary_suffix: 1
+    source_host_primary_prefixlen: 30
+
+protocols:
+  plaintext:
+    proto: plaintext
+    interface_prefix: plaintext
+    peer_section_prefix: plaintext
+    subnet_base: 200
+
+  wg:
+    proto: wireguard
+    interface_prefix: wg
+    peer_section_prefix: wireguard
+    persistent_keepalive: 25
+    default_mtu: 1420
+    subnet_base: 210
+    listen_port_base: 51000
+
+  wolf:
+    proto: wolfguard
+    interface_prefix: wolf
+    peer_section_prefix: wolfguard
+    persistent_keepalive: null
+    default_mtu: null
+    subnet_base: 220
+    listen_port_base: 52000
+
+two_dut:
+  enabled: true
+  dns: '10.101.10.1'
+  count: 32
+
+  hosts:
+    source: source
+    enc: enc
+    dec: dec
+    sink: sink
+
+  openwrt_interfaces:
+    enc:
+      underlay:
+        name: wg_source
+        device: eth0
+      plaintext:
+        name: source
+        device: eth1
+    dec:
+      underlay:
+        name: wg_sink
+        device: eth1
+      plaintext:
+        name: sink
+        device: eth0
+    sink:
+      plaintext:
+        name: sink
+        device: eth0
+
+  formulas:
+    source_octet_base: 100
+    tunnel_octet_base: 0
+    sink_octet_base: 200
+    underlay_octet: 199
+
+    source_host_suffix: 1
+    enc_plain_suffix: 2
+    enc_tunnel_suffix: 1
+    dec_tunnel_suffix: 2
+    dec_plain_suffix: 2
+    sink_host_suffix: 1
+
+    ipv4_prefixlen: 30
+    ipv6_prefixlen: 126
+
+  families:
+    - name: wg
+      protocol: wg
+      include_ipv6: true
+      mtu: 1420
+      allowed_ips:
+        enc_peer: [dec_tunnel_host4, sink_plain_net4, dec_tunnel_host6, sink_plain_net6]
+        dec_peer: [enc_tunnel_host4, source_plain_net4, enc_tunnel_host6, source_plain_net6]
+
+    - name: wolf
+      protocol: wolf
+      include_ipv6: true
+      allowed_ips:
+        enc_peer: [dec_tunnel_host4, sink_plain_net4, dec_tunnel_host6, sink_plain_net6]
+        dec_peer: [enc_tunnel_host4, source_plain_net4, enc_tunnel_host6, source_plain_net6]
+
+one_dut:
+  enabled: true
+
+  hosts:
+    source: source
+    sink: sink
+
+  defaults:
+    dns: '10.101.10.1'
+    dut_source_interface_name: source
+    dut_sink_interface_name: sink
+    traffic_sink_interface_name_template: "{profile}_sink"
+    traffic_sink_tunnel_name_template: "{profile}_{tunnel}"
+
+    source_octet_base: 100
+    tunnel_octet_base: 200
+    sink_underlay_octet_base: 199
+
+    source_host_suffix: 1
+    dut_source_suffix: 2
+    traffic_sink_underlay_suffix: 1
+    dut_sink_underlay_suffix: 2
+    traffic_sink_tunnel_suffix: 1
+    dut_tunnel_suffix: 2
+
+    source_primary_prefixlen: 24
+    dut_sink_underlay_prefixlen: 24
+    traffic_sink_underlay_prefixlen: 24
+
+    source_net_prefixlen: 30
+    tunnel_prefixlen: 30
+
+    dut_peer_allowed_ips: [tunnel_net4]
+
+    traffic_sink_peer_allowed_ips: [tunnel_net4, source_net4]
+    route_allowed_ips: true
+
+  profiles:
+    d2:
+      label: D2-Gowin
+      dut_host: d2
+      count: 8
+      dut_interfaces:
+        source_device: sfp1
+        sink_device: sfp2
+      traffic_sink:
+        device: eth1.2202
+      families:
+        - name: plain
+          protocol: plaintext
+        - name: wg
+          protocol: wg
+        - name: wolf
+          protocol: wolf
+
+    d3:
+      label: D3-Macchiato
+      dut_host: d3
+      count: 4
+      dut_interfaces:
+        source_device: eth1
+        sink_device: eth0
+      traffic_sink:
+        device: eth1.2203
+      families:
+        - name: plain
+          protocol: plaintext
+        - name: wg
+          protocol: wg
+        - name: wolf
+          protocol: wolf
+
+    d4:
+      label: D4-BananaR4
+      dut_host: d4
+      count: 4
+      dut_interfaces:
+        source_device: sfp-wan
+        sink_device: sfp-lan
+      traffic_sink:
+        device: eth1.2204
+      families:
+        - name: plain
+          protocol: plaintext
+        - name: wg
+          protocol: wg
+        - name: wolf
+          protocol: wolf
+
+    d5:
+      label: D5-Puzzle
+      dut_host: d5
+      count: 4
+      dut_interfaces:
+        source_device: eth0
+        sink_device: eth3
+      traffic_sink:
+        device: eth1.2205
+      families:
+        - name: plain
+          protocol: plaintext
+        - name: wg
+          protocol: wg
+        #- name: wolf
+        #  protocol: wolf
+
+    d6:
+      label: D6-BananaR64
+      dut_host: d6
+      count: 2
+      dut_interfaces:
+        source_device: lan1
+        sink_device: lan2
+      traffic_sink:
+        device: eth1.2206
+      families:
+        - name: plain
+          protocol: plaintext
+        - name: wg
+          protocol: wg
+        - name: wolf
+          protocol: wolf
+
+    d7:
+      label: D7-Lumen
+      dut_host: d7
+      count: 4
+      dut_interfaces:
+        source_device: lan2
+        sink_device: wan
+      traffic_sink:
+        device: eth1.2207
+      families:
+        - name: plain
+          protocol: plaintext
+        - name: wg
+          protocol: wg
+        - name: wolf
+          protocol: wolf

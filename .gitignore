@@ -1,0 +1,4 @@
+/inventories/lab/generated/
+/scripts/__pycache__/
+/rendered/
+*.retry

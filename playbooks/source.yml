@@ -1,0 +1,6 @@
+---
+- name: Configure Arch source host from compact formulas
+  hosts: arch
+  gather_facts: false
+  roles:
+    - arch_formulaic_source

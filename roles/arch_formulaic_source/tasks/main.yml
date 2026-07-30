@@ -1,0 +1,49 @@
+---
+- name: Render Arch source NetworkManager keyfiles on controller
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/../scripts/render_arch_networkmanager.py"
+      - --topology
+      - "{{ playbook_dir }}/../topology/topology.yml"
+      - --output-dir
+      - "{{ playbook_dir }}/../rendered/source/system-connections"
+  delegate_to: localhost
+  changed_when: true
+
+#- name: Install NetworkManager on Arch source
+#  become: true
+#  community.general.pacman:
+#    name:
+#      - networkmanager
+#      - iproute2
+#    state: present
+#    update_cache: true
+
+- name: Ensure NetworkManager system-connections directory exists
+  become: true
+  ansible.builtin.file:
+    path: /etc/NetworkManager/system-connections
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install generated NetworkManager keyfiles
+  become: true
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/NetworkManager/system-connections/{{ item | basename }}"
+    owner: root
+    group: root
+    mode: "0600"
+  with_fileglob:
+    - "{{ playbook_dir }}/../rendered/source/system-connections/*.nmconnection"
+  notify: Reload NetworkManager connections
+
+- name: Enable and start NetworkManager
+  become: true
+  ansible.builtin.service:
+    name: NetworkManager
+    state: started
+    enabled: true

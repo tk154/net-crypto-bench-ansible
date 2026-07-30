@@ -1,0 +1,10 @@
+---
+# Set to false only for preview rendering with CHANGE_ME placeholders.
+keygen_use_generated_keys: true
+
+# Set false if you only want generated files under rendered/ and do not want
+# OpenWrt network reload/restart after applying.
+openwrt_restart_network: true
+
+# Keep a backup before applying generated lab-owned UCI sections.
+openwrt_network_backup: true

@@ -1,0 +1,84 @@
+---
+- name: Ensure generated key directory exists on controller
+  ansible.builtin.file:
+    path: "{{ inventory_dir }}/generated"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  run_once: true
+
+- name: Check generated tunnel key file
+  ansible.builtin.stat:
+    path: "{{ inventory_dir }}/generated/keys.yml"
+  register: generated_keys_file
+  delegate_to: localhost
+  run_once: true
+
+- name: Fail if generated keys are requested but missing
+  ansible.builtin.assert:
+    that:
+      - not (keygen_use_generated_keys | default(true)) or generated_keys_file.stat.exists
+    fail_msg: >-
+      Generated tunnel keys are enabled, but {{ inventory_dir }}/generated/keys.yml is missing.
+      Run: ansible-playbook playbooks/generate_keys.yml
+  delegate_to: localhost
+  run_once: true
+
+- name: Render OpenWrt lab-owned network fragment on controller
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/../scripts/render_openwrt_network.py"
+      - --topology
+      - "{{ playbook_dir }}/../topology/topology.yml"
+      - --keys
+      - "{{ inventory_dir }}/generated/keys.yml"
+      - --host
+      - "{{ inventory_hostname }}"
+      - --output
+      - "{{ playbook_dir }}/../rendered/{{ inventory_hostname }}/network.fragment"
+  delegate_to: localhost
+  changed_when: true
+
+- name: Render OpenWrt UCI apply script on controller
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/../scripts/render_openwrt_network.py"
+      - --topology
+      - "{{ playbook_dir }}/../topology/topology.yml"
+      - --keys
+      - "{{ inventory_dir }}/generated/keys.yml"
+      - --host
+      - "{{ inventory_hostname }}"
+      - --output
+      - "{{ playbook_dir }}/../rendered/{{ inventory_hostname }}/apply-network.sh"
+      - --format
+      - script
+  delegate_to: localhost
+  changed_when: true
+
+- name: Backup existing /etc/config/network on OpenWrt
+  community.openwrt.command:
+    cmd: >-
+      sh -c 'if [ -f /etc/config/network ]; then
+      ts="$(date +%Y%m%d%H%M%S)";
+      cp -p /etc/config/network "/etc/config/network.pre_ansible_${ts}";
+      fi'
+  changed_when: false
+  when: openwrt_network_backup | default(true)
+
+- name: Upload generated UCI apply script
+  community.openwrt.copy:
+    src: "{{ playbook_dir }}/../rendered/{{ inventory_hostname }}/apply-network.sh"
+    dest: /tmp/ansible-apply-network.sh
+    mode: "0700"
+
+- name: Apply generated lab-owned OpenWrt network sections
+  community.openwrt.command:
+    cmd: sh /tmp/ansible-apply-network.sh
+  notify: Restart OpenWrt network
+
+- name: Flush handlers now if requested
+  ansible.builtin.meta: flush_handlers
+  when: openwrt_restart_network | default(true)

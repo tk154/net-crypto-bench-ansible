@@ -1,0 +1,57 @@
+---
+- name: Preview generated configs on the Ansible controller
+  hosts: localhost
+  gather_facts: false
+  vars:
+    openwrt_hosts: [enc, dec, sink, d2, d3, d4, d5, d6]
+  tasks:
+    - name: Render OpenWrt lab-owned config fragments
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/render_openwrt_network.py"
+          - --topology
+          - "{{ playbook_dir }}/../topology/topology.yml"
+          - --keys
+          - "{{ playbook_dir }}/../inventories/lab/generated/keys.yml"
+          - --host
+          - "{{ item }}"
+          - --output
+          - "{{ playbook_dir }}/../rendered/{{ item }}/network.fragment"
+          - --allow-placeholder-keys
+      loop: "{{ openwrt_hosts }}"
+      changed_when: true
+
+    - name: Render OpenWrt UCI apply scripts
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/render_openwrt_network.py"
+          - --topology
+          - "{{ playbook_dir }}/../topology/topology.yml"
+          - --keys
+          - "{{ playbook_dir }}/../inventories/lab/generated/keys.yml"
+          - --host
+          - "{{ item }}"
+          - --output
+          - "{{ playbook_dir }}/../rendered/{{ item }}/apply-network.sh"
+          - --format
+          - script
+          - --allow-placeholder-keys
+      loop: "{{ openwrt_hosts }}"
+      changed_when: true
+
+    - name: Render Arch source NetworkManager keyfiles
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/render_arch_networkmanager.py"
+          - --topology
+          - "{{ playbook_dir }}/../topology/topology.yml"
+          - --output-dir
+          - "{{ playbook_dir }}/../rendered/source/system-connections"
+      changed_when: true
+
+    - name: Show output directory
+      ansible.builtin.debug:
+        msg: "Rendered previews are under {{ playbook_dir }}/../rendered/."

@@ -1,0 +1,5 @@
+---
+- name: Restart OpenWrt network
+  community.openwrt.service:
+    name: network
+    state: restarted
