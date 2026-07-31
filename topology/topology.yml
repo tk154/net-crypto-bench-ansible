@@ -250,8 +250,8 @@ one_dut:
           protocol: plaintext
         - name: wg
           protocol: wg
-        #- name: wolf
-        #  protocol: wolf
+        - name: wolf
+          protocol: wolf
 
     d6:
       label: D6-BananaR64
