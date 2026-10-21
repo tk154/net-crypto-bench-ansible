@@ -79,8 +79,8 @@ protocols:
     proto: wolfguard
     interface_prefix: wolf
     peer_section_prefix: wolfguard
-    persistent_keepalive: null
-    default_mtu: null
+    persistent_keepalive: 25
+    default_mtu: 1420
     subnet_base: 220
     listen_port_base: 52000
 
@@ -143,6 +143,7 @@ two_dut:
     - name: wolf
       protocol: wolf
       include_ipv6: true
+      mtu: 1420
       allowed_ips:
         enc_peer: [dec_tunnel_host4, sink_plain_net4, dec_tunnel_host6, sink_plain_net6]
         dec_peer: [enc_tunnel_host4, source_plain_net4, enc_tunnel_host6, source_plain_net6]
