@@ -8,7 +8,7 @@ from dut_topology import generate_keys, load_yaml
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Generate WireGuard/WolfGuard tunnel keys from compact topology data.")
+    ap = argparse.ArgumentParser(description="Generate WireGuard/WolfGuard and MACsec keys from compact topology data.")
     ap.add_argument("--topology", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--force", action="store_true")

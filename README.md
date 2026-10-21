@@ -1,6 +1,6 @@
 # WireGuard eBPF Ansible
 
-This repository contains an Ansible-based automation suite for configuring a lab environment to benchmark and compare the throughput of WireGuard kernel implementation against eBPF/XDP and eBPF/TC. It also supports baseline Plaintext and WolfGuard traffic.
+This repository contains an Ansible-based automation suite for configuring a lab environment to benchmark and compare the throughput of WireGuard kernel implementation against eBPF/XDP and eBPF/TC. It also supports baseline Plaintext, WolfGuard, and MACsec traffic.
 
 It defines network topologies, manages keys, and generates configurations for Arch Linux and OpenWrt devices under test (DuTs).
 <br><br>
@@ -87,6 +87,53 @@ addressing convention. Static forward and return routes use each flow's next hop
 for both address families. The lab must permit IP forwarding and firewall forwarding
 across these interfaces.
 
+MACsec uses the same four-device routing layout with subnet base `230`: device 1
+uses `10.231`, while the one-DuT profiles use `10.232` through `10.237`.
+For two-DuT flow `n`, the addresses are:
+
+| Link | Subnet | First endpoint | Second endpoint |
+| --- | --- | --- | --- |
+| Source → Encryptor | `10.231.(100+n).0/30` | Source `.1` | Encryptor `.2` |
+| Encryptor → Decryptor | `10.231.n.0/30` | Encryptor `.1` | Decryptor `.2` |
+| Decryptor → Sink | `10.231.(200+n).0/30` | Sink `.1` | Decryptor `.2` |
+
+The middle-link interfaces are `macsec0` through `macsec31`, on encryptor `eth0`
+and decryptor `eth1`. Each has TX/RX association sections and a static
+`macsecN_network` interface using `@macsecN`. IPv6 follows the existing `/126`
+convention, with explicit forward and return routes.
+
+The one-DuT profiles place MACsec on the DuT's sink-facing device and the sink's
+existing VLAN device. Their encrypted link uses `10.23X.(200+n).0/30`, with sink
+`.1` and DuT `.2`; the source link uses `10.23X.(100+n).0/30`. Sink interface names
+are scoped by profile, such as `d2_macsec0`.
+
+Each MACsec interface also has a `config device` section setting its MAC address
+to `02:00:00:PP:EE:NN`. All fields are hexadecimal: `PP` is `01` for two-DuT
+or the profile number (`02` for `d2`, etc.); `EE` is `01` for the encryptor/DuT
+and `02` for the decryptor/sink; `NN` is the zero-based interface index.
+Thus two-DuT `macsec0` uses `02:00:00:01:01:00` on the encryptor and
+`02:00:00:01:02:00` on the decryptor, while `macsec31` ends in `1f`.
+Device sections are named `macsecN_device` (or `dX_macsecN_device` on the sink)
+so they coexist with the interface sections in UCI. These device MAC addresses
+are configured separately from the explicit SCI identifiers below.
+
+MACsec defaults to each topology's configured CPU/flow count: 32 for two-DuT,
+8 for `d2`, 4 for `d3`–`d5`, 2 for `d6`, and 4 for `d7`. These are configured
+limits, not CPU detection on the controller. Set `count` on a MACsec family to
+use fewer interfaces; it must not exceed the enclosing count. The current
+`200+n` IPv4 formula supports at most 56 interfaces.
+
+MACsec protocol interfaces are disabled by default (`option disabled '1'`).
+Set `disabled` to `0` on an interface in OpenWrt to enable it after deployment.
+MACsec uses `gcm-aes-xpn-256`, software encryption (`offload off`), association
+number 0, and replay protection disabled, matching the supplied lab configuration.
+The default MACsec MTU is 1468 to accommodate its 32-byte overhead on a
+1500-byte parent; a family `mtu` override is available. Each channel has a stable
+explicit SCI, whose final two bytes encode port `n+1`, and the peer's RX SCI
+matches it. Explicit SCI replaces the interface `port` option and avoids requiring
+physical NIC MAC addresses in the topology. OpenWrt must have the `macsec`
+protocol handler with explicit SCI/XPN support, `kmod-macsec`, and `ip-full`.
+
 ### One-DuT Setup
 
 ```text
@@ -111,6 +158,7 @@ The following configurations are generated:
 - Arch Linux source NetworkManager keyfiles.
 - OpenWrt static interfaces for source/sink.
 - WireGuard and WolfGuard tunnels (keys, interfaces, peers).
+- MACsec interfaces, paired TX/RX associations, static IP interfaces, and routes.
 - Shared sink return routes.
 <br><br>
 
@@ -118,7 +166,7 @@ The following configurations are generated:
 
 The repository relies on several YAML configuration files to define the testing environment and Ansible behavior:
 
-- **`topology/topology.yml`**: The core configuration file that defines the test topologies (`two_dut` and `one_dut`), hosts (and their roles), protocols (Plaintext, WireGuard, WolfGuard), subnet bases, prefix lengths, and interface mappings for each specific Device under Test.
+- **`topology/topology.yml`**: The core configuration file that defines the test topologies (`two_dut` and `one_dut`), hosts (and their roles), protocols (Plaintext, WireGuard, WolfGuard, MACsec), subnet bases, prefix lengths, and interface mappings for each specific Device under Test.
 - **`inventories/lab/hosts.yml`**: Maps the physical or virtual hosts to Ansible groups (like `source`, `sink`, `enc`, `dec`, and the various one-DuT devices) and sets connection variables.
 - **`requirements.yml`**: Specifies the required Ansible Galaxy collections needed to run the playbooks.
 
@@ -136,6 +184,26 @@ You can manually trigger key generation or override the tools using environment 
 ```bash
 WG_KEYGEN_TOOL=wg-wireguard WOLFGUARD_KEYGEN_TOOL=wg-fips ansible-playbook playbooks/generate_keys.yml
 ```
+
+The same playbook generates independent random 256-bit MACsec TX keys, 128-bit
+key IDs, 96-bit XPN salts, and 32-bit SSCIs for each endpoint and interface.
+The peer's RX association uses the corresponding TX material. MACsec requires
+no external key generation tool. Material is stored under `generated_macsec_keys`
+in `inventories/lab/generated/keys.yml`, with file permissions `0600`; existing
+WireGuard/WolfGuard and MACsec keys are preserved on ordinary generation runs.
+Run key generation again after adding MACsec to an existing lab.
+
+These manually keyed associations start at packet number 1. Before recreating
+channels that have already carried traffic (including after a reboot), rotate
+their keys and salts on both endpoints to avoid reusing an AES-GCM nonce. The
+existing force option rotates all configured protocols:
+
+```bash
+ansible-playbook playbooks/generate_keys.yml -e generate_key_extra_args=--force
+```
+
+Local previews can use `CHANGE_ME` placeholders when MACsec keys are absent;
+deployment requires generated keys.
 <br><br>
 
 ## Usage

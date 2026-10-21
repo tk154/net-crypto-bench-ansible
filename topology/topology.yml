@@ -86,6 +86,13 @@ protocols:
     subnet_base: 220
     listen_port_base: 52000
 
+  macsec:
+    proto: macsec
+    interface_prefix: macsec
+    subnet_base: 230
+    cipher: gcm-aes-xpn-256
+    default_mtu: 1468
+
 two_dut:
   enabled: true
   dns: '10.101.10.1'
@@ -154,6 +161,10 @@ two_dut:
       protocol: plaintext
       include_ipv6: true
 
+    - name: macsec
+      protocol: macsec
+      include_ipv6: true
+
 one_dut:
   enabled: true
 
@@ -207,6 +218,8 @@ one_dut:
           protocol: wg
         - name: wolf
           protocol: wolf
+        - name: macsec
+          protocol: macsec
 
     d3:
       label: D3-Macchiato
@@ -224,6 +237,8 @@ one_dut:
           protocol: wg
         - name: wolf
           protocol: wolf
+        - name: macsec
+          protocol: macsec
 
     d4:
       label: D4-BananaR4
@@ -241,6 +256,8 @@ one_dut:
           protocol: wg
         - name: wolf
           protocol: wolf
+        - name: macsec
+          protocol: macsec
 
     d5:
       label: D5-Puzzle
@@ -258,6 +275,8 @@ one_dut:
           protocol: wg
         - name: wolf
           protocol: wolf
+        - name: macsec
+          protocol: macsec
 
     d6:
       label: D6-BananaR64
@@ -275,6 +294,8 @@ one_dut:
           protocol: wg
         - name: wolf
           protocol: wolf
+        - name: macsec
+          protocol: macsec
 
     d7:
       label: D7-Lumen
@@ -292,3 +313,5 @@ one_dut:
           protocol: wg
         - name: wolf
           protocol: wolf
+        - name: macsec
+          protocol: macsec

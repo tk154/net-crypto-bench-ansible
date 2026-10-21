@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from dut_topology import fam_prefix4, load_yaml, one_vals, profile_device_id, two_vals, v4, v4_net
+from dut_topology import family_count, fam_prefix4, load_yaml, one_vals, profile_device_id, two_vals, v4, v4_net
 
 
 def stable_uuid(name: str) -> str:
@@ -91,7 +91,7 @@ def render_two_dut_source_nm(topo: Dict[str, Any]) -> Tuple[str, str]:
     ipv6_routes: List[Tuple[str, str]] = []
 
     for fam in td["families"]:
-        for n in range(int(td["count"])):
+        for n in range(family_count(td, fam)):
             vals = two_vals(topo, fam, n)
             addresses.append(vals["source_plain4"])
             routes.append((vals["sink_plain_net4"], vals["enc_plain4"].split("/")[0]))
@@ -136,7 +136,7 @@ def render_one_dut_source_nm(topo: Dict[str, Any], profile_name: str, profile: D
     did = profile_device_id(profile)
     for fam in profile["families"]:
         addresses.append(primary_source_host_address(topo, fam, did))
-        for n in range(int(profile["count"])):
+        for n in range(family_count(profile, fam)):
             vals = one_vals(topo, profile, fam, n, did)
             addresses.append(vals["source_host_ip4"])
             routes.append((vals["tunnel_net4"], vals["dut_source_ip4"].split("/")[0]))

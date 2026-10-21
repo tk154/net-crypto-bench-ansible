@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import os
+import secrets
 import shutil
 import subprocess
 from pathlib import Path
@@ -72,10 +74,10 @@ def render_uci_script(sections: List[Dict[str, Any]]) -> str:
         "}",
         "",
     ]
-    
+
     out += [
         "# Clean up all named peer sections dynamically",
-        "for peer in $(uci -q show network | awk -F'[.=]' '/=(wireguard|wolfguard)_(wg|wolf|[a-zA-Z0-9_]+_(wg|wolf))[0-9]+$/ {print $2}' | sort -u); do",
+        "for peer in $(uci -q show network | awk -F'[.=]' '/=((wireguard|wolfguard)_(wg|wolf|[a-zA-Z0-9_]+_(wg|wolf))[0-9]+|macsec_(tx|rx)_(macsec|d[0-9]+_macsec)[0-9]+)$/ {print $2}' | sort -u); do",
         "    uci -q delete network.\"$peer\"",
         "done",
         "",
@@ -84,6 +86,7 @@ def render_uci_script(sections: List[Dict[str, Any]]) -> str:
         "    case \"$iface\" in",
         "        wg[0-9]*|wolf[0-9]*|plaintext[0-9]*) uci -q delete network.\"$iface\" ;;",
         "        *_wg[0-9]*|*_wolf[0-9]*|*_plaintext[0-9]*) uci -q delete network.\"$iface\" ;;",
+        "        macsec[0-9]*|d[0-9]*_macsec[0-9]*) uci -q delete network.\"$iface\" ;;",
         "    esac",
         "done",
         "",
@@ -91,6 +94,7 @@ def render_uci_script(sections: List[Dict[str, Any]]) -> str:
         "for dev in $(uci -q show network | awk -F'[.=]' '/=device$/ {print $2}'); do",
         "    case \"$dev\" in",
         "        *_vlan) uci -q delete network.\"$dev\" ;;",
+        "        macsec[0-9]*_device|d[0-9]*_macsec[0-9]*_device) uci -q delete network.\"$dev\" ;;",
         "    esac",
         "done",
         "",
@@ -103,7 +107,7 @@ def render_uci_script(sections: List[Dict[str, Any]]) -> str:
         "",
         "# Clean up anonymous route and route6 sections pointing to lab interfaces",
         "while true; do",
-        "    to_delete=$(uci -q show network | grep -E \"^network\\.@route[6]?\\[[0-9]+\\]\\.interface='?(sink|source|(d[0-9]+_)?(wg|wolf|plaintext)[0-9]*)'?\" | cut -d. -f2 | head -n1)",
+        "    to_delete=$(uci -q show network | grep -E \"^network\\.@route[6]?\\[[0-9]+\\]\\.interface='?(sink|source|(d[0-9]+_)?(wg|wolf|plaintext)[0-9]*|(d[0-9]+_)?macsec[0-9]+_network)'?$\" | cut -d. -f2 | head -n1)",
         "    if [ -n \"$to_delete\" ]; then",
         "        uci -q delete network.\"$to_delete\"",
         "    else",
@@ -112,7 +116,7 @@ def render_uci_script(sections: List[Dict[str, Any]]) -> str:
         "done",
         "",
     ]
-    
+
     for name in named:
         out.append(f"uci -q delete network.{name} || true")
     out += ["", "uci -q batch <<'UCI'"]
@@ -151,6 +155,68 @@ def fam_keepalive(topo: Dict[str, Any], family: Dict[str, Any]) -> Optional[int]
 
 def fam_mtu(topo: Dict[str, Any], family: Dict[str, Any]) -> Optional[int]:
     return family.get("mtu", proto(topo, family).get("default_mtu"))
+
+
+def family_count(profile: Dict[str, Any], family: Dict[str, Any]) -> int:
+    limit = int(profile["count"])
+    count = int(family.get("count", limit))
+    if not 0 <= count <= limit:
+        raise ValueError(f"Family {fam_name(family)} count must be between 0 and {limit}")
+    if family["protocol"] == "macsec" and count > 56:
+        raise ValueError("MACsec supports at most 56 flows with the 200+n IPv4 formula")
+    return count
+
+
+def macsec_sci(host: str, iface: str, n: int) -> str:
+    # Stable, locally administered channel address plus a distinct 16-bit port.
+    address = bytearray(hashlib.sha256(f"macsec:{host}:{iface}".encode()).digest()[:6])
+    address[0] = (address[0] | 2) & 0xfe
+    return address.hex() + f"{n + 1:04x}"
+
+
+def macsec_key_for(keys: Dict[str, Any], host: str, iface: str, allow_placeholders=False) -> Dict[str, Any]:
+    try:
+        material = keys["generated_macsec_keys"][host][iface]
+        for field in ("key", "keyid", "salt", "ssci"):
+            material[field]
+        return material
+    except KeyError:
+        if allow_placeholders:
+            return {"key": "CHANGE_ME_MACSEC_KEY", "keyid": "CHANGE_ME_MACSEC_KEYID",
+                    "salt": "CHANGE_ME_MACSEC_SALT", "ssci": 291}
+        raise ValueError(f"Missing MACsec key for {host}.{iface}; run the key generation playbook")
+
+
+def macsec_sections(topo: Dict[str, Any], family: Dict[str, Any], keys: Dict[str, Any],
+                    host: str, iface: str, peer_host: str, peer_iface: str,
+                    parent: str, n: int, address4: str, address6: Optional[str] = None,
+                    allow_placeholders=False, *, profile_id: int, endpoint: int) -> List[Dict[str, Any]]:
+    cfg = proto(topo, family)
+    tx = macsec_key_for(keys, host, iface, allow_placeholders)
+    rx = macsec_key_for(keys, peer_host, peer_iface, allow_placeholders)
+    sa_options = {"an": 0, "pn": 1, "active": 1}
+    return [
+        section("device", f"{iface}_device", {
+            "name": iface, "macaddr": f"02:00:00:{profile_id:02x}:{endpoint:02x}:{n:02x}",
+        }),
+        section("interface", iface, {
+            "proto": "macsec", "device": parent,
+            "sci": macsec_sci(host, iface, n),
+            "cipher": cfg["cipher"], "encrypt": 1, "offload": "off",
+            "encoding_sa": 0, "replay": 0, "mtu": fam_mtu(topo, family),
+            "disabled": 1,
+        }),
+        section(f"macsec_tx_{iface}", f"{iface}_tx", {
+            **sa_options, **{field: tx[field] for field in ("key", "keyid", "salt", "ssci")},
+        }),
+        section(f"macsec_rx_{iface}", f"{iface}_rx", {
+            **sa_options, **{field: rx[field] for field in ("key", "keyid", "salt", "ssci")},
+            "sci": macsec_sci(peer_host, peer_iface, n),
+        }),
+        section("interface", f"{iface}_network", {
+            "proto": "static", "device": f"@{iface}", "mtu": fam_mtu(topo, family),
+        }, {"ipaddr": [address4], "ip6addr": [address6] if address6 else []}),
+    ]
 
 
 def fam_name(family: Dict[str, Any]) -> str:
@@ -301,7 +367,6 @@ def two_dut_plain_routes(family: Dict[str, Any], values: Dict[str, str], n: int,
 def render_two_dut_enc_sections(topo: Dict[str, Any], keys: Dict[str, Any], allow_placeholders=False) -> List[Dict[str, Any]]:
     td = topo["two_dut"]
     device_id = int(td.get("device_id", 1))
-    count = int(td["count"])
     ifcfg = td["openwrt_interfaces"]["enc"]
     underlay4: List[str] = []
     underlay6: List[str] = []
@@ -309,13 +374,13 @@ def render_two_dut_enc_sections(topo: Dict[str, Any], keys: Dict[str, Any], allo
     plain6: List[str] = []
     sections: List[Dict[str, Any]] = []
     for fam in td["families"]:
-        for n in range(count):
+        for n in range(family_count(td, fam)):
             vals = two_vals(topo, fam, n, device_id)
             if fam_proto(topo, fam) == "plaintext":
                 underlay4.append(vals["enc_tunnel4"])
                 if fam.get("include_ipv6") and "enc_tunnel6" in vals:
                     underlay6.append(vals["enc_tunnel6"])
-            elif n == 0:
+            elif fam_proto(topo, fam) != "macsec" and n == 0:
                 underlay4.append(vals["enc_underlay4"])
                 if fam.get("include_ipv6") and "enc_underlay6" in vals:
                     underlay6.append(vals["enc_underlay6"])
@@ -330,14 +395,25 @@ def render_two_dut_enc_sections(topo: Dict[str, Any], keys: Dict[str, Any], allo
     sections.append(section("interface", ifcfg["plaintext"]["name"], source_options, {"ipaddr": plain4, "ip6addr": plain6}))
     for fam in td["families"]:
         if fam_proto(topo, fam) == "plaintext":
-            for n in range(count):
+            for n in range(family_count(td, fam)):
                 vals = two_vals(topo, fam, n, device_id)
                 sections.extend(two_dut_plain_routes(fam, vals, n, ifcfg["underlay"]["name"], "sink_plain_net", "dec_tunnel"))
+            continue
+        if fam_proto(topo, fam) == "macsec":
+            for n in range(family_count(td, fam)):
+                vals = two_vals(topo, fam, n, device_id)
+                ifname = f"{fam_if_prefix(topo, fam)}{n}"
+                sections.extend(macsec_sections(
+                    topo, fam, keys, "enc", ifname, "dec", ifname,
+                    ifcfg["underlay"]["device"], n, vals["enc_tunnel4"],
+                    vals.get("enc_tunnel6") if fam.get("include_ipv6") else None,
+                    allow_placeholders, profile_id=1, endpoint=1))
+                sections.extend(two_dut_plain_routes(fam, vals, n, f"{ifname}_network", "sink_plain_net", "dec_tunnel"))
             continue
         if_prefix = fam_if_prefix(topo, fam)
         peer_prefix = fam_peer_prefix(topo, fam)
         lpb = fam_listen_port_base(topo, fam, device_id)
-        for n in range(count):
+        for n in range(family_count(td, fam)):
             vals = two_vals(topo, fam, n, device_id)
             ifname = f"{if_prefix}{n}"
             peer_name = f"{ifname}_peer"
@@ -363,7 +439,6 @@ def render_two_dut_enc_sections(topo: Dict[str, Any], keys: Dict[str, Any], allo
 def render_two_dut_dec_sections(topo: Dict[str, Any], keys: Dict[str, Any], allow_placeholders=False) -> List[Dict[str, Any]]:
     td = topo["two_dut"]
     device_id = int(td.get("device_id", 1))
-    count = int(td["count"])
     ifcfg = td["openwrt_interfaces"]["dec"]
     underlay4: List[str] = []
     underlay6: List[str] = []
@@ -371,13 +446,13 @@ def render_two_dut_dec_sections(topo: Dict[str, Any], keys: Dict[str, Any], allo
     plain6: List[str] = []
     sections: List[Dict[str, Any]] = []
     for fam in td["families"]:
-        for n in range(count):
+        for n in range(family_count(td, fam)):
             vals = two_vals(topo, fam, n, device_id)
             if fam_proto(topo, fam) == "plaintext":
                 underlay4.append(vals["dec_tunnel4"])
                 if fam.get("include_ipv6") and "dec_tunnel6" in vals:
                     underlay6.append(vals["dec_tunnel6"])
-            elif n == 0:
+            elif fam_proto(topo, fam) != "macsec" and n == 0:
                 underlay4.append(vals["dec_underlay4"])
                 if fam.get("include_ipv6") and "dec_underlay6" in vals:
                     underlay6.append(vals["dec_underlay6"])
@@ -388,14 +463,25 @@ def render_two_dut_dec_sections(topo: Dict[str, Any], keys: Dict[str, Any], allo
     sections.append(section("interface", ifcfg["plaintext"]["name"], {"device": ifcfg["plaintext"]["device"], "proto": "static", "mtu": 1500}, {"ipaddr": plain4, "ip6addr": plain6}))
     for fam in td["families"]:
         if fam_proto(topo, fam) == "plaintext":
-            for n in range(count):
+            for n in range(family_count(td, fam)):
                 vals = two_vals(topo, fam, n, device_id)
                 sections.extend(two_dut_plain_routes(fam, vals, n, ifcfg["underlay"]["name"], "source_plain_net", "enc_tunnel"))
+            continue
+        if fam_proto(topo, fam) == "macsec":
+            for n in range(family_count(td, fam)):
+                vals = two_vals(topo, fam, n, device_id)
+                ifname = f"{fam_if_prefix(topo, fam)}{n}"
+                sections.extend(macsec_sections(
+                    topo, fam, keys, "dec", ifname, "enc", ifname,
+                    ifcfg["underlay"]["device"], n, vals["dec_tunnel4"],
+                    vals.get("dec_tunnel6") if fam.get("include_ipv6") else None,
+                    allow_placeholders, profile_id=1, endpoint=2))
+                sections.extend(two_dut_plain_routes(fam, vals, n, f"{ifname}_network", "source_plain_net", "enc_tunnel"))
             continue
         if_prefix = fam_if_prefix(topo, fam)
         peer_prefix = fam_peer_prefix(topo, fam)
         lpb = fam_listen_port_base(topo, fam, device_id)
-        for n in range(count):
+        for n in range(family_count(td, fam)):
             vals = two_vals(topo, fam, n, device_id)
             ifname = f"{if_prefix}{n}"
             peer_name = f"{ifname}_peer"
@@ -445,7 +531,6 @@ def render_one_dut_device_sections(topo: Dict[str, Any], host: str, profile_name
     p = topo["one_dut"]["profiles"][profile_name]
     d = topo["one_dut"]["defaults"]
     device_id = profile_device_id(p)
-    count = int(p["count"])
     sections: List[Dict[str, Any]] = []
     source_addrs: List[str] = []
     sink_addrs: List[str] = []
@@ -455,10 +540,11 @@ def render_one_dut_device_sections(topo: Dict[str, Any], host: str, profile_name
             source_addrs.append(f"{primary['address']}/{primary.get('prefixlen', d.get('source_primary_prefixlen', 24))}")
         else:
             source_addrs.append(f"{primary}/{d.get('source_primary_prefixlen', 24)}")
-        for n in range(count):
+        for n in range(family_count(p, fam)):
             vals = one_vals(topo, p, fam, n, device_id)
             source_addrs.append(vals["dut_source_ip4"])
-            sink_addrs.append(vals["dut_sink_underlay_ip4"])
+            if fam_proto(topo, fam) != "macsec":
+                sink_addrs.append(vals["dut_sink_underlay_ip4"])
     first_prefix4 = fam_prefix4(topo, p["families"][0], device_id)
     gateway = p["dut_interfaces"].get("gateway", f"{first_prefix4}.1.1")
     source_options = {"device": p["dut_interfaces"]["source_device"], "proto": "static", "gateway": gateway}
@@ -471,10 +557,20 @@ def render_one_dut_device_sections(topo: Dict[str, Any], host: str, profile_name
     for fam in p["families"]:
         if fam_proto(topo, fam) == "plaintext":
             continue
+        if fam_proto(topo, fam) == "macsec":
+            for n in range(family_count(p, fam)):
+                vals = one_vals(topo, p, fam, n, device_id)
+                ifname = f"{fam_if_prefix(topo, fam)}{n}"
+                sections.extend(macsec_sections(
+                    topo, fam, keys, host, ifname, "sink", f"{profile_name}_{ifname}",
+                    p["dut_interfaces"]["sink_device"], n, vals["dut_tunnel_ip4"],
+                    allow_placeholders=allow_placeholders,
+                    profile_id=int(profile_name.lstrip("d")), endpoint=1))
+            continue
         if_prefix = fam_if_prefix(topo, fam)
         peer_prefix = fam_peer_prefix(topo, fam)
         lpb = fam_listen_port_base(topo, fam, device_id)
-        for n in range(count):
+        for n in range(family_count(p, fam)):
             vals = one_vals(topo, p, fam, n, device_id)
             ifname = f"{if_prefix}{n}"
             sink_if = f"{profile_name}_{ifname}"
@@ -499,15 +595,15 @@ def render_one_dut_sink_sections(topo: Dict[str, Any], profile_name: str, keys: 
     p = topo["one_dut"]["profiles"][profile_name]
     d = topo["one_dut"]["defaults"]
     device_id = profile_device_id(p)
-    count = int(p["count"])
     sections: List[Dict[str, Any]] = []
     sink_if_name = d["traffic_sink_interface_name_template"].format(profile=profile_name)
     sink_addrs: List[str] = []
     for fam in p["families"]:
-        for n in range(count):
+        for n in range(family_count(p, fam)):
             vals = one_vals(topo, p, fam, n, device_id)
-            sink_addrs.append(vals["traffic_sink_underlay_ip4"])
-            
+            if fam_proto(topo, fam) != "macsec":
+                sink_addrs.append(vals["traffic_sink_underlay_ip4"])
+
     device_str = p["traffic_sink"]["device"]
     if '.' in device_str:
         ifname, vid = device_str.split('.', 1)
@@ -521,11 +617,11 @@ def render_one_dut_sink_sections(topo: Dict[str, Any], profile_name: str, keys: 
         target_device = profile_name
     else:
         target_device = device_str
-        
+
     sections.append(section("interface", sink_if_name, {"device": target_device, "proto": "static"}, {"ipaddr": sink_addrs}))
     for fam in p["families"]:
         if fam_proto(topo, fam) == "plaintext":
-            for n in range(count):
+            for n in range(family_count(p, fam)):
                 vals = one_vals(topo, p, fam, n, device_id)
                 sections.append(section("route", f"route_{profile_name}_source{n}", {
                     "interface": sink_if_name,
@@ -533,10 +629,25 @@ def render_one_dut_sink_sections(topo: Dict[str, Any], profile_name: str, keys: 
                     "gateway": vals["dut_sink_underlay_host4"],
                 }))
             continue
+        if fam_proto(topo, fam) == "macsec":
+            for n in range(family_count(p, fam)):
+                vals = one_vals(topo, p, fam, n, device_id)
+                dev_if = f"{fam_if_prefix(topo, fam)}{n}"
+                local_if = f"{profile_name}_{dev_if}"
+                sections.extend(macsec_sections(
+                    topo, fam, keys, "sink", local_if, p["dut_host"], dev_if,
+                    target_device, n, vals["traffic_sink_tunnel_ip4"],
+                    allow_placeholders=allow_placeholders,
+                    profile_id=int(profile_name.lstrip("d")), endpoint=2))
+                sections.append(section("route", f"route_{local_if}_source", {
+                    "interface": f"{local_if}_network", "target": vals["source_net4"],
+                    "gateway": vals["dut_tunnel_host4"],
+                }))
+            continue
         if_prefix = fam_if_prefix(topo, fam)
         peer_prefix = fam_peer_prefix(topo, fam)
         lpb = fam_listen_port_base(topo, fam, device_id)
-        for n in range(count):
+        for n in range(family_count(p, fam)):
             vals = one_vals(topo, p, fam, n, device_id)
             dev_if = f"{if_prefix}{n}"
             local_if = d["traffic_sink_tunnel_name_template"].format(profile=profile_name, tunnel=dev_if)
@@ -565,22 +676,21 @@ def render_one_dut_sink_sections(topo: Dict[str, Any], profile_name: str, keys: 
 def render_two_dut_sink_sections(topo: Dict[str, Any]) -> List[Dict[str, Any]]:
     td = topo["two_dut"]
     device_id = int(td.get("device_id", 1))
-    count = int(td["count"])
     ifcfg = td["openwrt_interfaces"]["sink"]["plaintext"]
     addrs4: List[str] = []
     addrs6: List[str] = []
     sections: List[Dict[str, Any]] = []
     for fam in td["families"]:
-        for n in range(count):
+        for n in range(family_count(td, fam)):
             vals = two_vals(topo, fam, n, device_id)
             addrs4.append(vals["sink_plain4"])
             if fam.get("include_ipv6") and "sink_plain6" in vals:
                 addrs6.append(vals["sink_plain6"])
     sections.append(section("interface", ifcfg["name"], {"device": ifcfg["device"], "proto": "static", "mtu": 1500}, {"ipaddr": addrs4, "ip6addr": addrs6}))
     for fam in td["families"]:
-        for n in range(count):
+        for n in range(family_count(td, fam)):
             vals = two_vals(topo, fam, n, device_id)
-            if fam_proto(topo, fam) == "plaintext":
+            if fam_proto(topo, fam) in ("plaintext", "macsec"):
                 sections.extend(two_dut_plain_routes(fam, vals, n, ifcfg["name"], "source_plain_net", "dec_plain"))
                 continue
             name = f"route_two_{fam_name(fam)}_{n}"
@@ -638,7 +748,7 @@ def render_arch_source(topo: Dict[str, Any], interface: str = "eth0") -> str:
         td_device_id = int(td.get("device_id", 1))
         for fam in td["families"]:
             p4 = fam_prefix4(topo, fam, td_device_id)
-            for n in range(int(td["count"])):
+            for n in range(family_count(td, fam)):
                 vals = two_vals(topo, fam, n, td_device_id)
                 addresses.append(vals["source_plain4"])
                 routes.append({"Destination": vals["sink_plain_net4"], "Gateway": vals["enc_plain4"].split('/')[0]})
@@ -648,7 +758,7 @@ def render_arch_source(topo: Dict[str, Any], interface: str = "eth0") -> str:
         for _, p in od["profiles"].items():
             did = profile_device_id(p)
             for fam in p["families"]:
-                for n in range(int(p["count"])):
+                for n in range(family_count(p, fam)):
                     vals = one_vals(topo, p, fam, n, did)
                     addresses.append(vals["source_host_ip4"])
                     routes.append({"Destination": vals["tunnel_net4"], "Gateway": vals["dut_source_ip4"].split('/')[0]})
@@ -667,7 +777,7 @@ def all_key_targets(topo: Dict[str, Any]) -> Iterable[Tuple[str, str, str]]:
         if p == "plaintext":
             continue
         if_prefix = fam_if_prefix(topo, fam)
-        for n in range(int(td["count"])):
+        for n in range(family_count(td, fam)):
             ifname = f"{if_prefix}{n}"
             yield p, "enc", ifname
             yield p, "dec", ifname
@@ -677,7 +787,7 @@ def all_key_targets(topo: Dict[str, Any]) -> Iterable[Tuple[str, str, str]]:
             if p == "plaintext":
                 continue
             if_prefix = fam_if_prefix(topo, fam)
-            for n in range(int(prof["count"])):
+            for n in range(family_count(prof, fam)):
                 ifname = f"{if_prefix}{n}"
                 yield p, prof["dut_host"], ifname
                 yield p, "sink", f"{profile_name}_{ifname}"
@@ -722,8 +832,17 @@ def genkey_with_candidates(candidates: List[str]) -> Tuple[str, str, str, List[s
 def generate_keys(topo: Dict[str, Any], out_path: Path, force: bool = False, skip_wolfguard: bool = False, allow_dummy: bool = False) -> Dict[str, Any]:
     existing = load_yaml(out_path) if out_path.exists() and not force else {}
     keys = existing.get("generated_tunnel_keys", {})
+    macsec_keys = existing.get("generated_macsec_keys", {})
     meta = existing.get("generated_tunnel_key_meta", {})
     for proto_name, host, ifname in all_key_targets(topo):
+        if proto_name == "macsec":
+            material = macsec_keys.setdefault(host, {})
+            if ifname not in material or not all(material[ifname].get(f) is not None for f in ("key", "keyid", "salt", "ssci")):
+                material[ifname] = {
+                    "key": secrets.token_hex(32), "keyid": secrets.token_hex(16),
+                    "salt": secrets.token_hex(12), "ssci": secrets.randbits(32),
+                }
+            continue
         if proto_name == "wolfguard" and skip_wolfguard:
             continue
         keys.setdefault(host, {})
@@ -742,6 +861,8 @@ def generate_keys(topo: Dict[str, Any], out_path: Path, force: bool = False, ski
                 raise SystemExit(f"Could not generate {proto_name} key for {host}.{ifname}: {e}")
         keys[host][ifname] = {"private_key": priv, "public_key": pub, "proto": proto_name}
         meta.setdefault(host, {})[ifname] = {"tool": used_tool}
-    data = {"generated_tunnel_keys": keys, "generated_tunnel_key_meta": meta}
+    data = {"generated_tunnel_keys": keys, "generated_tunnel_key_meta": meta,
+            "generated_macsec_keys": macsec_keys}
     dump_yaml(out_path, data)
+    out_path.chmod(0o600)
     return data
