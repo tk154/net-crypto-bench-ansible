@@ -3,7 +3,7 @@
   hosts: localhost
   gather_facts: false
   vars:
-    openwrt_hosts: [enc, dec, sink, d2, d3, d4, d5, d6]
+    openwrt_hosts: [enc, dec, sink, d2, d3, d4, d5, d6, d7]
   tasks:
     - name: Render OpenWrt lab-owned config fragments
       ansible.builtin.command:
