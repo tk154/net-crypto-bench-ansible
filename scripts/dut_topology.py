@@ -95,7 +95,7 @@ def render_uci_script(sections: List[Dict[str, Any]]) -> str:
         "done",
         "",
         "# Clean up old named routes",
-        "for route in $(uci -q show network | awk -F'[.=]' '/=route$/ {print $2}'); do",
+        "for route in $(uci -q show network | awk -F'[.=]' '/=(route|route6)$/ {print $2}'); do",
         "    case \"$route\" in",
         "        route_two_*|route_*_source|route_d[0-9]*_source[0-9]*) uci -q delete network.\"$route\" ;;",
         "    esac",
@@ -281,6 +281,23 @@ def allowed_from_tokens(tokens: List[str], values: Dict[str, str]) -> List[str]:
     return [values[t] for t in tokens if t in values]
 
 
+def two_dut_plain_routes(family: Dict[str, Any], values: Dict[str, str], n: int,
+                         interface: str, target: str, gateway: str) -> List[Dict[str, Any]]:
+    name = f"route_two_{fam_name(family)}_{n}"
+    sections = [section("route", name, {
+        "interface": interface,
+        "target": values[f"{target}4"],
+        "gateway": values[f"{gateway}4"].split('/')[0],
+    })]
+    if family.get("include_ipv6") and f"{target}6" in values:
+        sections.append(section("route6", f"{name}_6", {
+            "interface": interface,
+            "target": values[f"{target}6"],
+            "gateway": values[f"{gateway}6"].split('/')[0],
+        }))
+    return sections
+
+
 def render_two_dut_enc_sections(topo: Dict[str, Any], keys: Dict[str, Any], allow_placeholders=False) -> List[Dict[str, Any]]:
     td = topo["two_dut"]
     device_id = int(td.get("device_id", 1))
@@ -294,7 +311,11 @@ def render_two_dut_enc_sections(topo: Dict[str, Any], keys: Dict[str, Any], allo
     for fam in td["families"]:
         for n in range(count):
             vals = two_vals(topo, fam, n, device_id)
-            if n == 0:
+            if fam_proto(topo, fam) == "plaintext":
+                underlay4.append(vals["enc_tunnel4"])
+                if fam.get("include_ipv6") and "enc_tunnel6" in vals:
+                    underlay6.append(vals["enc_tunnel6"])
+            elif n == 0:
                 underlay4.append(vals["enc_underlay4"])
                 if fam.get("include_ipv6") and "enc_underlay6" in vals:
                     underlay6.append(vals["enc_underlay6"])
@@ -309,6 +330,9 @@ def render_two_dut_enc_sections(topo: Dict[str, Any], keys: Dict[str, Any], allo
     sections.append(section("interface", ifcfg["plaintext"]["name"], source_options, {"ipaddr": plain4, "ip6addr": plain6}))
     for fam in td["families"]:
         if fam_proto(topo, fam) == "plaintext":
+            for n in range(count):
+                vals = two_vals(topo, fam, n, device_id)
+                sections.extend(two_dut_plain_routes(fam, vals, n, ifcfg["underlay"]["name"], "sink_plain_net", "dec_tunnel"))
             continue
         if_prefix = fam_if_prefix(topo, fam)
         peer_prefix = fam_peer_prefix(topo, fam)
@@ -349,7 +373,11 @@ def render_two_dut_dec_sections(topo: Dict[str, Any], keys: Dict[str, Any], allo
     for fam in td["families"]:
         for n in range(count):
             vals = two_vals(topo, fam, n, device_id)
-            if n == 0:
+            if fam_proto(topo, fam) == "plaintext":
+                underlay4.append(vals["dec_tunnel4"])
+                if fam.get("include_ipv6") and "dec_tunnel6" in vals:
+                    underlay6.append(vals["dec_tunnel6"])
+            elif n == 0:
                 underlay4.append(vals["dec_underlay4"])
                 if fam.get("include_ipv6") and "dec_underlay6" in vals:
                     underlay6.append(vals["dec_underlay6"])
@@ -360,6 +388,9 @@ def render_two_dut_dec_sections(topo: Dict[str, Any], keys: Dict[str, Any], allo
     sections.append(section("interface", ifcfg["plaintext"]["name"], {"device": ifcfg["plaintext"]["device"], "proto": "static", "mtu": 1500}, {"ipaddr": plain4, "ip6addr": plain6}))
     for fam in td["families"]:
         if fam_proto(topo, fam) == "plaintext":
+            for n in range(count):
+                vals = two_vals(topo, fam, n, device_id)
+                sections.extend(two_dut_plain_routes(fam, vals, n, ifcfg["underlay"]["name"], "source_plain_net", "enc_tunnel"))
             continue
         if_prefix = fam_if_prefix(topo, fam)
         peer_prefix = fam_peer_prefix(topo, fam)
@@ -549,6 +580,9 @@ def render_two_dut_sink_sections(topo: Dict[str, Any]) -> List[Dict[str, Any]]:
     for fam in td["families"]:
         for n in range(count):
             vals = two_vals(topo, fam, n, device_id)
+            if fam_proto(topo, fam) == "plaintext":
+                sections.extend(two_dut_plain_routes(fam, vals, n, ifcfg["name"], "source_plain_net", "dec_plain"))
+                continue
             name = f"route_two_{fam_name(fam)}_{n}"
             sections.append(section("route", name, {"interface": ifcfg["name"], "target": vals["source_plain_net4"], "gateway": vals["dec_plain4"].split('/')[0]}))
     return sections

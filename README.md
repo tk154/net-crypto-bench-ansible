@@ -69,6 +69,24 @@ The following diagrams illustrate the IP addressing scheme used for the tunnel s
 +--------------+           +--------------------------------------------------+                  +--------------------------------------------------+           +--------------+
 ```
 
+The plaintext baseline uses the same four-device path, with static routing and
+MTU 1500. Each flow has its own middle-link subnet on the encryptor's `wg_source`
+(`eth0`) and decryptor's `wg_sink` (`eth1`); it requires no tunnel interfaces or keys.
+
+| Flow | Source / Encryptor source link | Encryptor / Decryptor middle link | Decryptor / Sink link |
+| --- | --- | --- | --- |
+| 0 | `10.201.100.1` / `10.201.100.2` | `10.201.0.1` / `10.201.0.2` | `10.201.200.2` / `10.201.200.1` |
+| 1 | `10.201.101.1` / `10.201.101.2` | `10.201.1.1` / `10.201.1.2` | `10.201.201.2` / `10.201.201.1` |
+| 31 | `10.201.131.1` / `10.201.131.2` | `10.201.31.1` / `10.201.31.2` | `10.201.231.2` / `10.201.231.1` |
+
+All IPv4 links use `/30`. For flow `n`, IPv6 uses `10:201:(100+n)::/126`
+on the source link, `10:201:n::/126` on the middle link, and
+`10:201:(200+n)::/126` on the sink link, with the same host suffixes as IPv4.
+The formulas insert the index as text into IPv6 hextets, preserving the existing
+addressing convention. Static forward and return routes use each flow's next hop
+for both address families. The lab must permit IP forwarding and firewall forwarding
+across these interfaces.
+
 ### One-DuT Setup
 
 ```text

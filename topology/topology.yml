@@ -150,6 +150,10 @@ two_dut:
         enc_peer: [dec_tunnel_host4, sink_plain_net4, dec_tunnel_host6, sink_plain_net6]
         dec_peer: [enc_tunnel_host4, source_plain_net4, enc_tunnel_host6, source_plain_net6]
 
+    - name: plain
+      protocol: plaintext
+      include_ipv6: true
+
 one_dut:
   enabled: true
 
