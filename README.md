@@ -1,13 +1,17 @@
-# WireGuard eBPF Ansible
+# Network Encryption Benchmark Automation
 
-This repository contains an Ansible-based automation suite for configuring a lab environment to benchmark and compare the throughput of WireGuard kernel implementation against eBPF/XDP and eBPF/TC. It also supports baseline Plaintext, WolfGuard, and MACsec traffic.
+Ansible automation for benchmarking plaintext, WireGuard, WolfGuard, and MACsec
+on OpenWrt, including eBPF/XDP and eBPF/TC acceleration.
 
-It defines network topologies, manages keys, and generates configurations for Arch Linux and OpenWrt devices under test (DuTs).
+The suite defines lab topologies, manages cryptographic keys, and generates
+configurations for an Arch Linux traffic source, OpenWrt devices under test
+(DuTs), and an OpenWrt traffic sink.
 <br><br>
 
 ## Architecture and Topologies
 
-The lab environment supports two primary network topologies, modeling different test setups.
+The lab environment supports two primary network topologies. Both support
+plaintext, WireGuard, WolfGuard, and MACsec traffic.
 The traffic source, traffic sink, and the dedicated encryptor/decryptor devices in the Two-DuT setup are all powered by identical Supermicro servers with the following specifications:
 
 | Component | Model / Type |
@@ -24,19 +28,20 @@ A two DuT / four-device setup designed to test dedicated encryptor and decryptor
 ```text
 +-------------------------+             +------------------------+             +------------------------+             +-------------------------+
 |     Traffic Source      |             |     Encryptor DuT      |             |     Decryptor DuT      |             |      Traffic Sink       |
-| Supermicro / Arch Linux |  Plaintext  |  Supermicro / OpenWrt  |  WireGuard  |  Supermicro / OpenWrt  |  Plaintext  |  Supermicro / OpenWrt   |
+| Supermicro / Arch Linux |  Plaintext  |  Supermicro / OpenWrt  |  Test link  |  Supermicro / OpenWrt  |  Plaintext  |  Supermicro / OpenWrt   |
 |       10.201.99.1       | ----------> |      10.201.99.2       | ----------> |      10.201.99.3       | ----------> |       10.201.99.4       |
 +-------------------------+             +------------------------+             +------------------------+             +-------------------------+
 ```
 
 ### 2. One-DuT Setup (`one_dut`)
 
-A one DuT / three-device setup where a single Device under Test (DuT) handles the offloading.
+A one DuT / three-device setup where a single Device under Test (DuT) routes
+plaintext traffic or encrypts and decrypts traffic between the source and sink.
 
 ```text
 +-------------------------+             +---------------------------+             +-------------------------+
 |     Traffic Source      |             | Encryptor / Decryptor DuT |             |      Traffic Sink       |
-| Supermicro / Arch Linux |  Plaintext  |        dX / OpenWrt       |  WireGuard  |  Supermicro / OpenWrt   |
+| Supermicro / Arch Linux |  Plaintext  |        dX / OpenWrt       |  Test link  |  Supermicro / OpenWrt   |
 |       10.201.99.1       | <---------> |         10.20X.1.2        | <---------> |       10.201.99.4       |
 +-------------------------+             +---------------------------+             +-------------------------+
 ```
@@ -52,7 +57,13 @@ A one DuT / three-device setup where a single Device under Test (DuT) handles th
 
 ## IP Address Configuration
 
-The following diagrams illustrate the IP addressing scheme used for the tunnel setups.
+The following diagrams show WireGuard addressing examples. Each protocol family
+uses its own IPv4 prefix: `10.20X` for plaintext, `10.21X` for WireGuard,
+`10.22X` for WolfGuard, and `10.23X` for MACsec, where `X` is `1` for the
+two-DuT setup or the one-DuT profile number (`2` through `7`). The plaintext
+and MACsec layouts are described separately below. Addresses in these examples
+belong to the data plane; the architecture diagrams above show inventory host
+addresses.
 
 ### Two-DuT Setup
 
@@ -61,11 +72,11 @@ The following diagrams illustrate the IP addressing scheme used for the tunnel s
 |    Source    |           |                    Encryptor                     |                  |                   Decryptor                      |           |     Sink     |
 |--------------|           |--------------------------------------------------|                  |--------------------------------------------------|           |--------------|
 |         eth0 | Plaintext | eth1         |        wgX         |         eth0 | WireGuard Tunnel | eth1         |        wgX         |         eth0 | Plaintext | eth0         |
-| 10.201.100.1 | --------> | 10.201.100.2 |  10.211.0.1 (wg0)  | 10.211.199.1 | ---------------> | 10.211.199.2 |  10.211.0.2 (wg0)  | 10.201.200.2 | --------> | 10.201.200.1 |
-| 10.201.101.1 | --------> | 10.201.101.2 |  10.211.1.1 (wg1)  |              | ---------------> |              |  10.211.1.2 (wg1)  | 10.201.201.2 | --------> | 10.201.201.1 |
-| 10.201.102.1 | --------> | 10.201.102.2 |  10.211.2.1 (wg2)  |              | ---------------> |              |  10.211.2.2 (wg2)  | 10.201.202.2 |           | 10.201.202.1 |
+| 10.211.100.1 | --------> | 10.211.100.2 |  10.211.0.1 (wg0)  | 10.211.199.1 | ---------------> | 10.211.199.2 |  10.211.0.2 (wg0)  | 10.211.200.2 | --------> | 10.211.200.1 |
+| 10.211.101.1 | --------> | 10.211.101.2 |  10.211.1.1 (wg1)  |              | ---------------> |              |  10.211.1.2 (wg1)  | 10.211.201.2 | --------> | 10.211.201.1 |
+| 10.211.102.1 | --------> | 10.211.102.2 |  10.211.2.1 (wg2)  |              | ---------------> |              |  10.211.2.2 (wg2)  | 10.211.202.2 |           | 10.211.202.1 |
 |      ...     |           |      ...     |        ....        |              |                  |              |        ....        |      ...     |           |      ...     |
-| 10.201.131.1 | --------> | 10.201.131.2 | 10.211.31.1 (wg31) |              | ---------------> |              | 10.211.31.2 (wg31) | 10.201.231.2 | --------> | 10.201.231.1 |
+| 10.211.131.1 | --------> | 10.211.131.2 | 10.211.31.1 (wg31) |              | ---------------> |              | 10.211.31.2 (wg31) | 10.211.231.2 | --------> | 10.211.231.1 |
 +--------------+           +--------------------------------------------------+                  +--------------------------------------------------+           +--------------+
 ```
 
@@ -141,13 +152,19 @@ protocol handler with explicit SCI/XPN support, `kmod-macsec`, and `ip-full`.
 |    Source    |           |             Encryptor / Decryptor dX             |                  |                Sink               |
 |--------------|           |--------------------------------------------------|                  |-----------------------------------|
 |    eth1.120X | Plaintext | if_src       |         wgY        |      if_sink | WireGuard Tunnel | eth1.220X    |         wgY        |
-| 10.20X.100.1 | <-------> | 10.20X.100.2 | 10.21X.200.2 (wg0) | 10.21X.199.2 | <--------------> | 10.21X.199.1 | 10.21X.200.1 (wg0) |
-| 10.20X.101.1 | <-------> | 10.20X.101.2 | 10.21X.201.2 (wg1) | 10.21X.198.2 | <--------------> | 10.21X.198.1 | 10.21X.201.1 (wg1) |
-| 10.20X.102.1 | <-------> | 10.20X.102.2 | 10.21X.202.2 (wg2) | 10.21X.197.2 | <--------------> | 10.21X.197.1 | 10.21X.202.1 (wg2) |
+| 10.21X.100.1 | <-------> | 10.21X.100.2 | 10.21X.200.2 (wg0) | 10.21X.200.2 | <--------------> | 10.21X.200.1 | 10.21X.200.1 (wg0) |
+| 10.21X.101.1 | <-------> | 10.21X.101.2 | 10.21X.201.2 (wg1) | 10.21X.201.2 | <--------------> | 10.21X.201.1 | 10.21X.201.1 (wg1) |
+| 10.21X.102.1 | <-------> | 10.21X.102.2 | 10.21X.202.2 (wg2) | 10.21X.202.2 | <--------------> | 10.21X.202.1 | 10.21X.202.1 (wg2) |
 |      ...     |           |      ...     |         ...        |      ...     |                  |      ...     |         ...        |
-| 10.20X.107.1 | <-------> | 10.20X.107.2 | 10.21X.207.2 (wg7) | 10.21X.192.2 | <--------------> | 10.21X.192.1 | 10.21X.207.1 (wg7) |
+| 10.21X.107.1 | <-------> | 10.21X.107.2 | 10.21X.207.2 (wg7) | 10.21X.207.2 | <--------------> | 10.21X.207.1 | 10.21X.207.1 (wg7) |
 +--------------+           +--------------------------------------------------+                  +-----------------------------------+
 ```
+
+All per-flow IPv4 links use `/30`. In the current one-DuT configuration,
+WireGuard and WolfGuard underlay and tunnel interfaces use the same per-flow
+addresses. The `wg7` row applies to the eight-flow `d2` profile; other profiles
+use their configured flow counts. VLAN parents use MTU 9000, while source and
+sink VLAN devices use MTU 1500.
 <br><br>
 
 ## What is Generated?
