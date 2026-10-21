@@ -55,9 +55,11 @@ source_host:
   one_dut:
     type: vlan
     parent: eth1
+    parent_mtu: 9000
     vlan_id_base: 1200
     source_host_primary_suffix: 1
     source_host_primary_prefixlen: 30
+    mtu: 1500
 
 protocols:
   plaintext:
@@ -161,10 +163,11 @@ one_dut:
     dut_sink_interface_name: sink
     traffic_sink_interface_name_template: "{profile}_sink"
     traffic_sink_tunnel_name_template: "{profile}_{tunnel}"
+    traffic_sink_parent_mtu: 9000
+    traffic_sink_vlan_mtu: 1500
 
     source_octet_base: 100
     tunnel_octet_base: 200
-    sink_underlay_octet_base: 199
 
     source_host_suffix: 1
     dut_source_suffix: 2
@@ -174,8 +177,6 @@ one_dut:
     dut_tunnel_suffix: 2
 
     source_primary_prefixlen: 24
-    dut_sink_underlay_prefixlen: 24
-    traffic_sink_underlay_prefixlen: 24
 
     source_net_prefixlen: 30
     tunnel_prefixlen: 30

@@ -97,7 +97,7 @@ def render_uci_script(sections: List[Dict[str, Any]]) -> str:
         "# Clean up old named routes",
         "for route in $(uci -q show network | awk -F'[.=]' '/=route$/ {print $2}'); do",
         "    case \"$route\" in",
-        "        route_two_*|route_*_source) uci -q delete network.\"$route\" ;;",
+        "        route_two_*|route_*_source|route_d[0-9]*_source[0-9]*) uci -q delete network.\"$route\" ;;",
         "    esac",
         "done",
         "",
@@ -392,11 +392,8 @@ def one_vals(topo: Dict[str, Any], profile: Dict[str, Any], family: Dict[str, An
     p4 = fam_prefix4(topo, family, device_id)
     src_oct = int(d["source_octet_base"]) + n
     tun_oct = int(d["tunnel_octet_base"]) + n
-    if fam_proto(topo, family) == "plaintext":
-        sink_oct = int(d["tunnel_octet_base"]) + n
-    else:
-        sink_oct = int(d["sink_underlay_octet_base"]) - n
-    sink_underlay_plen = int(family.get("dut_sink_underlay_prefixlen", d.get("dut_sink_underlay_prefixlen", d["traffic_sink_underlay_prefixlen"])))
+    sink_oct = tun_oct
+    sink_underlay_plen = int(d["tunnel_prefixlen"])
     return {
         "source_host_ip4": v4(p4, src_oct, int(d["source_host_suffix"]), int(d["source_net_prefixlen"])),
         "dut_source_ip4": v4(p4, src_oct, int(d["dut_source_suffix"]), int(d["source_net_prefixlen"])),
@@ -487,7 +484,8 @@ def render_one_dut_sink_sections(topo: Dict[str, Any], profile_name: str, keys: 
             "type": "8021q",
             "ifname": ifname,
             "vid": vid,
-            "name": profile_name
+            "name": profile_name,
+            "mtu": d.get("traffic_sink_vlan_mtu", 1500)
         }))
         target_device = profile_name
     else:
@@ -496,6 +494,13 @@ def render_one_dut_sink_sections(topo: Dict[str, Any], profile_name: str, keys: 
     sections.append(section("interface", sink_if_name, {"device": target_device, "proto": "static"}, {"ipaddr": sink_addrs}))
     for fam in p["families"]:
         if fam_proto(topo, fam) == "plaintext":
+            for n in range(count):
+                vals = one_vals(topo, p, fam, n, device_id)
+                sections.append(section("route", f"route_{profile_name}_source{n}", {
+                    "interface": sink_if_name,
+                    "target": vals["source_net4"],
+                    "gateway": vals["dut_sink_underlay_host4"],
+                }))
             continue
         if_prefix = fam_if_prefix(topo, fam)
         peer_prefix = fam_peer_prefix(topo, fam)
@@ -557,6 +562,21 @@ def render_openwrt_sections(topo: Dict[str, Any], host: str, keys: Dict[str, Any
         return render_two_dut_dec_sections(topo, keys, allow_placeholders)
     if role == "traffic_sink":
         sections = render_two_dut_sink_sections(topo)
+
+        physical_devices = set()
+        for pname, p in topo["one_dut"]["profiles"].items():
+            device_str = p["traffic_sink"]["device"]
+            if '.' in device_str:
+                ifname, _ = device_str.split('.', 1)
+                physical_devices.add(ifname)
+
+        d = topo["one_dut"]["defaults"]
+        for ifname in sorted(physical_devices):
+            sections.append(section("device", ifname, {
+                "name": ifname,
+                "mtu": d.get("traffic_sink_parent_mtu", 9000)
+            }))
+
         for pname in topo["one_dut"]["profiles"]:
             sections.extend(render_one_dut_sink_sections(topo, pname, keys, allow_placeholders))
         return sections

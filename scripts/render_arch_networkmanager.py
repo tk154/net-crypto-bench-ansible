@@ -153,9 +153,30 @@ def render_one_dut_source_nm(topo: Dict[str, Any], profile_name: str, profile: D
     return filename, content
 
 
+def render_one_dut_parent_nm(topo: Dict[str, Any]) -> Tuple[str, str]:
+    sh = topo.get("source_host", {}).get("one_dut", {})
+    parent = sh.get("parent", "eth1")
+    parent_mtu = sh.get("parent_mtu", 9000)
+
+    connection_id = f"{parent}-parent"
+    filename = sanitize_filename(connection_id)
+
+    content = nm_keyfile(
+        connection_id=connection_id,
+        interface_name=parent,
+        connection_type="ethernet",
+        addresses=[],
+        routes=[],
+        mtu=parent_mtu,
+    )
+    return filename, content
+
+
 def render_all(topo: Dict[str, Any]) -> Dict[str, str]:
     files: Dict[str, str] = {}
     filename, content = render_two_dut_source_nm(topo)
+    files[filename] = content
+    filename, content = render_one_dut_parent_nm(topo)
     files[filename] = content
     for profile_name, profile in topo["one_dut"]["profiles"].items():
         filename, content = render_one_dut_source_nm(topo, profile_name, profile)
